@@ -77,6 +77,36 @@ async def fetch_distributor_id_by_code(code: str) -> str:
         return str(row["id"])
 
 
+async def create_checkout_session(
+    user_id: str, build_id: str | None, cart_snapshot: dict, shipping_address: dict, subtotal_cents: int
+) -> str:
+    """Persists the priced cart snapshot server-side so checkout.py only has
+    to put this row's (short) id in Stripe PaymentIntent metadata, instead of
+    the full cart JSON — Stripe caps each metadata value at 500 characters,
+    which the raw cart JSON blows past for anything but a tiny cart."""
+    query = """
+        INSERT INTO checkout_sessions (user_id, build_id, cart_snapshot, shipping_address, subtotal_cents)
+        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)
+        RETURNING id
+    """
+    async with get_pool().acquire() as conn:
+        row = await conn.fetchrow(
+            query, user_id, build_id, cart_snapshot, shipping_address, subtotal_cents
+        )
+        return str(row["id"])
+
+
+async def fetch_checkout_session(checkout_id: str) -> dict | None:
+    query = """
+        SELECT id, user_id, build_id, cart_snapshot, shipping_address, subtotal_cents
+        FROM checkout_sessions
+        WHERE id = $1
+    """
+    async with get_pool().acquire() as conn:
+        row = await conn.fetchrow(query, checkout_id)
+        return dict(row) if row else None
+
+
 async def create_order(
     user_id: str,
     build_id: str | None,

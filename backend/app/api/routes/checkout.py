@@ -26,7 +26,6 @@ Flow:
 
 from __future__ import annotations
 
-import json
 import logging
 
 import stripe
@@ -37,7 +36,7 @@ from app.auth import CurrentUser, get_current_user
 from app.config import get_settings
 from app.models import ShippingAddress
 from app.services.offer_lookup import resolve_priced_offers
-from app.db import fetch_cart_items
+from app.db import fetch_cart_items, create_checkout_session
 
 logger = logging.getLogger("hardwarefabric.checkout")
 router = APIRouter(prefix="/api/v1/checkout", tags=["checkout"])
@@ -115,26 +114,40 @@ async def create_payment_intent(
         )
 
     cart_metadata = {"line_items": line_items, "priced_line_items": priced_line_items}
+    shipping_dict = {
+        "name": payload.shipping_address.name,
+        "address": {
+            "line1": payload.shipping_address.line1,
+            "line2": payload.shipping_address.line2 or "",
+            "city": payload.shipping_address.city,
+            "state": payload.shipping_address.state,
+            "postal_code": payload.shipping_address.postal_code,
+            "country": payload.shipping_address.country,
+        },
+        "phone": payload.shipping_address.phone,
+    }
+
+    # Stripe caps each metadata VALUE at 500 characters — the full priced
+    # cart JSON blows past that for anything but a tiny cart (confirmed in
+    # production: stripe.error.InvalidRequestError, "up to 500 characters
+    # ... 2111 characters"). Persist the snapshot server-side instead and
+    # pass only this short opaque id; the webhook looks it back up by id.
+    checkout_id = await create_checkout_session(
+        user_id=current_user.user_id,
+        build_id=single_build_id,
+        cart_snapshot=cart_metadata,
+        shipping_address=shipping_dict,
+        subtotal_cents=subtotal_cents,
+    )
 
     intent = stripe.PaymentIntent.create(
         amount=subtotal_cents,
         currency="usd",
-        shipping={
-            "name": payload.shipping_address.name,
-            "address": {
-                "line1": payload.shipping_address.line1,
-                "line2": payload.shipping_address.line2 or "",
-                "city": payload.shipping_address.city,
-                "state": payload.shipping_address.state,
-                "postal_code": payload.shipping_address.postal_code,
-                "country": payload.shipping_address.country,
-            },
-            "phone": payload.shipping_address.phone,
-        },
+        shipping=shipping_dict,
         metadata={
             "user_id": current_user.user_id,
             "build_id": single_build_id or "",
-            "cart": json.dumps(cart_metadata),
+            "checkout_id": checkout_id,
         },
         automatic_payment_methods={"enabled": True},
     )

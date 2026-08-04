@@ -350,6 +350,23 @@ CREATE TABLE markup_rules (
 -- 9. ORDERS / DROPSHIP PIPELINE
 -- ----------------------------------------------------------------------------
 
+-- Stripe caps each PaymentIntent metadata VALUE at 500 characters, so the
+-- priced cart (line_items + priced_line_items) can't be JSON-dumped straight
+-- into metadata for anything but a tiny cart. Instead the checkout route
+-- persists the priced snapshot here and puts only this row's id in Stripe
+-- metadata; the webhook looks it back up by id.
+CREATE TABLE checkout_sessions (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id             UUID NOT NULL,
+    build_id            UUID REFERENCES build_configurations(id),
+    cart_snapshot       JSONB NOT NULL,   -- { line_items: [...], priced_line_items: [...] }
+    shipping_address    JSONB NOT NULL,
+    subtotal_cents      INTEGER NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_checkout_sessions_user ON checkout_sessions(user_id);
+
 CREATE TABLE orders (
     id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id                  UUID NOT NULL,

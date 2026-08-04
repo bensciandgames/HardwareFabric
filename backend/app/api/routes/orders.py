@@ -47,6 +47,7 @@ from app.db import (
     fetch_orders_for_user,
     fetch_order_items,
     fetch_distributor_orders,
+    fetch_checkout_session,
 )
 
 logger = logging.getLogger("hardwarefabric.orders")
@@ -90,16 +91,24 @@ async def _fulfill_order_from_payment_intent(intent: dict) -> None:
     metadata = intent.get("metadata", {})
     user_id = metadata.get("user_id")
     build_id = metadata.get("build_id") or None  # checkout.py sends "" when the cart spans multiple/no builds
-    cart_json = metadata.get("cart")  # populated at PaymentIntent creation time by the checkout route
+    checkout_id = metadata.get("checkout_id")  # points at the priced cart snapshot (see checkout.py)
 
-    if not user_id or not cart_json:
-        logger.error("PaymentIntent %s missing required metadata (user_id/cart); cannot fulfill", payment_intent_id)
+    if not user_id or not checkout_id:
+        logger.error("PaymentIntent %s missing required metadata (user_id/checkout_id); cannot fulfill", payment_intent_id)
         return
 
-    import json
-    cart_raw = json.loads(cart_json)
-    shipping_raw = intent.get("shipping") or metadata.get("shipping_address")
+    checkout_session = await fetch_checkout_session(checkout_id)
+    if checkout_session is None:
+        logger.error(
+            "PaymentIntent %s references checkout_session %s which no longer exists; cannot fulfill",
+            payment_intent_id, checkout_id,
+        )
+        return
+
+    cart_raw = checkout_session["cart_snapshot"]
+    shipping_raw = intent.get("shipping") or checkout_session["shipping_address"]
     if isinstance(shipping_raw, str):
+        import json
         shipping_raw = json.loads(shipping_raw)
 
     shipping_address = ShippingAddress(
