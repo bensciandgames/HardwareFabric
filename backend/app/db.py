@@ -6,6 +6,7 @@ easy to reason about for a build this early.
 """
 
 from __future__ import annotations
+import json
 import asyncpg
 from app.config import get_settings
 
@@ -13,11 +14,24 @@ settings = get_settings()
 _pool: asyncpg.Pool | None = None
 
 
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    # asyncpg hands back jsonb/json columns as raw text by default, which
+    # breaks every Pydantic response model typed `specs: dict` etc. (a str
+    # fails dict validation -> 500). Registering these codecs makes asyncpg
+    # decode/encode JSON columns to/from Python dicts transparently.
+    await conn.set_type_codec(
+        "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog", format="text",
+    )
+    await conn.set_type_codec(
+        "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog", format="text",
+    )
+
+
 async def init_pool() -> None:
     global _pool
     # asyncpg's DSN doesn't use the SQLAlchemy-style "+asyncpg" driver suffix.
     dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    _pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=10)
+    _pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=10, init=_init_connection)
 
 
 async def close_pool() -> None:
@@ -79,11 +93,10 @@ async def create_order(
         ) VALUES ($1, $2, $3, 'paid', $4::jsonb, $5, $6, $7)
         RETURNING id
     """
-    import json
     async with get_pool().acquire() as conn:
         row = await conn.fetchrow(
             query, user_id, build_id, stripe_payment_intent_id,
-            json.dumps(shipping_address), blind_dropship, subtotal_cents, total_cents,
+            shipping_address, blind_dropship, subtotal_cents, total_cents,
         )
         return str(row["id"])
 
