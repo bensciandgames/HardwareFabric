@@ -124,7 +124,7 @@ async def patch_build(
     return _to_build_response(row)
 
 
-@router.delete("/{build_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{build_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_existing_build(build_id: str, current_user: CurrentUser = Depends(get_current_user)) -> None:
     deleted = await delete_build(build_id, current_user.user_id)
     if not deleted:
@@ -177,7 +177,7 @@ async def add_component_to_build(
     )
 
 
-@router.delete("/{build_id}/components/{build_component_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{build_id}/components/{build_component_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def remove_component_from_build(
     build_id: str, build_component_id: str, current_user: CurrentUser = Depends(get_current_user)
 ) -> None:

@@ -115,13 +115,13 @@ async def update_cart_item(
     return _to_response(match)
 
 
-@router.delete("/items/{cart_item_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/items/{cart_item_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_cart_item(cart_item_id: str, current_user: CurrentUser = Depends(get_current_user)) -> None:
     removed = await remove_cart_item(cart_item_id, current_user.user_id)
     if not removed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cart item not found")
 
 
-@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def empty_cart(current_user: CurrentUser = Depends(get_current_user)) -> None:
     await clear_cart(current_user.user_id)
