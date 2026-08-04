@@ -7,24 +7,41 @@ import { useAuth } from "@/contexts/AuthContext";
 import { ApiError } from "@/lib/api";
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, resendVerification } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [resendStatus, setResendStatus] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    setNeedsVerification(false);
+    setResendStatus(null);
     setIsSubmitting(true);
     try {
       await login(email, password);
       router.push("/builder");
     } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        setNeedsVerification(true);
+      }
       setError(err instanceof ApiError ? err.detail : "Something went wrong. Please try again.");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleResend() {
+    setResendStatus(null);
+    try {
+      const res = await resendVerification(email);
+      setResendStatus(res.message);
+    } catch (err) {
+      setResendStatus(err instanceof ApiError ? err.detail : "Couldn't resend right now — try again shortly.");
     }
   }
 
@@ -58,6 +75,16 @@ export default function LoginPage() {
         </label>
 
         {error && <p className="font-body text-sm text-danger">{error}</p>}
+        {needsVerification && (
+          <button
+            type="button"
+            onClick={handleResend}
+            className="self-start text-sm text-blue-medium hover:underline"
+          >
+            Resend verification email
+          </button>
+        )}
+        {resendStatus && <p className="font-body text-sm text-text-muted">{resendStatus}</p>}
 
         <button
           type="submit"

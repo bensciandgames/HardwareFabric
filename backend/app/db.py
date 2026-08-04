@@ -193,14 +193,25 @@ async def fetch_distributor_orders(order_id: str) -> list[dict]:
 
 # --- Users --------------------------------------------------------------
 
-async def create_user(email: str, password_hash: str, full_name: str | None) -> dict:
+async def create_user(
+    email: str,
+    password_hash: str,
+    full_name: str | None,
+    verification_token: str,
+    verification_token_expires_at,
+) -> dict:
     query = """
-        INSERT INTO users (email, password_hash, full_name)
-        VALUES ($1, $2, $3)
-        RETURNING id, email, full_name, created_at
+        INSERT INTO users (
+            email, password_hash, full_name,
+            email_verified, verification_token, verification_token_expires_at
+        )
+        VALUES ($1, $2, $3, FALSE, $4, $5)
+        RETURNING id, email, full_name, created_at, email_verified
     """
     async with get_pool().acquire() as conn:
-        row = await conn.fetchrow(query, email, password_hash, full_name)
+        row = await conn.fetchrow(
+            query, email, password_hash, full_name, verification_token, verification_token_expires_at
+        )
         return dict(row)
 
 
@@ -213,8 +224,34 @@ async def fetch_user_by_email(email: str) -> dict | None:
 async def fetch_user_by_id(user_id: str) -> dict | None:
     async with get_pool().acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, email, full_name, created_at FROM users WHERE id = $1", user_id
+            "SELECT id, email, full_name, created_at, email_verified FROM users WHERE id = $1", user_id
         )
+        return dict(row) if row else None
+
+
+async def set_verification_token(user_id: str, token: str, expires_at) -> None:
+    async with get_pool().acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET verification_token = $1, verification_token_expires_at = $2 WHERE id = $3",
+            token, expires_at, user_id,
+        )
+
+
+async def verify_user_by_token(token: str) -> dict | None:
+    """Marks the matching user verified iff the token exists and hasn't
+    expired. Returns the user row on success, None on invalid/expired token
+    (caller can't distinguish which — same as any other one-shot token
+    flow, to avoid leaking which tokens ever existed)."""
+    query = """
+        UPDATE users
+           SET email_verified = TRUE, verification_token = NULL, verification_token_expires_at = NULL
+         WHERE verification_token = $1
+           AND verification_token_expires_at > now()
+           AND email_verified = FALSE
+        RETURNING id, email, full_name
+    """
+    async with get_pool().acquire() as conn:
+        row = await conn.fetchrow(query, token)
         return dict(row) if row else None
 
 

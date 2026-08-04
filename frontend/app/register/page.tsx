@@ -1,32 +1,46 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
 import { ApiError } from "@/lib/api";
 
 export default function RegisterPage() {
   const { register } = useAuth();
-  const router = useRouter();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submittedEmail, setSubmittedEmail] = useState<string | null>(null);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setIsSubmitting(true);
     try {
-      await register(email, password, fullName || undefined);
-      router.push("/builder");
+      const res = await register(email, password, fullName || undefined);
+      setSubmittedEmail(res.email);
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Something went wrong. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  if (submittedEmail) {
+    return (
+      <div className="mx-auto flex max-w-sm flex-col gap-4 py-16">
+        <h1 className="font-display text-2xl font-bold text-text-primary">Check your email</h1>
+        <p className="font-body text-sm text-text-muted">
+          We sent a verification link to <span className="text-text-primary">{submittedEmail}</span>. Click it to
+          activate your account, then come back and log in.
+        </p>
+        <Link href="/login" className="mt-2 text-sm text-blue-medium hover:underline">
+          Go to login
+        </Link>
+      </div>
+    );
   }
 
   return (

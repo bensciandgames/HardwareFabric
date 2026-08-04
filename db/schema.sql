@@ -398,12 +398,20 @@ CREATE INDEX idx_distributor_orders_order ON distributor_orders(order_id);
 -- was no persisted cart at all — "Add build to cart" had no backing state).
 
 CREATE TABLE users (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email           TEXT NOT NULL UNIQUE,
-    password_hash   TEXT NOT NULL,
-    full_name       TEXT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email                           TEXT NOT NULL UNIQUE,
+    password_hash                   TEXT NOT NULL,
+    full_name                       TEXT,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Email verification. Login is blocked while email_verified = FALSE.
+    -- verification_token is a one-shot random token emailed to the user;
+    -- cleared (set NULL) once consumed or superseded by a resend.
+    email_verified                  BOOLEAN NOT NULL DEFAULT FALSE,
+    verification_token              TEXT,
+    verification_token_expires_at   TIMESTAMPTZ
 );
+
+CREATE INDEX idx_users_verification_token ON users(verification_token) WHERE verification_token IS NOT NULL;
 
 ALTER TABLE build_configurations
     ADD CONSTRAINT fk_build_configurations_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;

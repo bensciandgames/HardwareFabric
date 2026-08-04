@@ -46,6 +46,24 @@ class Settings(BaseSettings):
     # --- Distributor sync worker / pricing cache ---
     distributor_offer_cache_ttl_minutes: int = 15
 
+    # --- Email (verification links, etc.) ---
+    # Plain SMTP so this works against any provider (Namecheap Private Email,
+    # Gmail, etc.) without an API-specific integration. If smtp_host is left
+    # blank, the app logs the verification link instead of sending mail —
+    # lets registration/verification be tested end-to-end before a real
+    # mailbox exists.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    smtp_from_email: str = "no-reply@hardwarefabric.tech"
+    smtp_from_name: str = "HardwareFabric"
+    email_verification_token_expire_hours: int = 24
+    # Used to build the verification link sent in the email (frontend route,
+    # not the API host).
+    frontend_verify_email_path: str = "/verify-email"
+
     # --- HardwareFabric fulfillment identity (used on blind dropship packing) ---
     ship_from_company_name_override: str = "HardwareFabric"
     dropship_return_address_line1: str = "HardwareFabric Returns Processing"
