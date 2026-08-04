@@ -1,0 +1,27 @@
+# Secrets — never commit real environment files
+backend/.env
+frontend/.env.local
+frontend/.env*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+npm-debug.log*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Stray staging artifact from initial transfer
+/_incoming_update.tar.gz
