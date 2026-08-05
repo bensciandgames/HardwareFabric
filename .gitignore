@@ -2,6 +2,17 @@
 backend/.env
 frontend/.env.local
 frontend/.env*.local
+.env
+.env.*
+!.env.local.example
+!.env*.example
+*.pem
+*.key
+id_rsa*
+*_rsa
+*.pfx
+secrets.*
+credentials.*
 
 # Python
 __pycache__/
@@ -22,6 +33,12 @@ npm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+*.log
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
 
 # Stray staging artifact from initial transfer
 /_incoming_update.tar.gz

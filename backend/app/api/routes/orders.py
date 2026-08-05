@@ -166,27 +166,23 @@ async def _fulfill_order_from_payment_intent(intent: dict) -> None:
             blind_dropship=True,
         )
 
-        try:
-            result = await client.submit_dropship_order(dropship_request)
-        except DistributorAPIError as exc:
-            logger.error("Distributor order submission failed for order %s via %s: %s", order_id, dist_code, exc)
-            await insert_distributor_order(order_id, await fetch_distributor_id_by_code(dist_code.value), None, "failed")
-            overall_status = "failed"
-            continue
-
         distributor_db_id = await fetch_distributor_id_by_code(dist_code.value)
-        await insert_distributor_order(order_id, distributor_db_id, result.distributor_order_number, result.status)
 
+        # order_items is the bookkeeping record of what the customer was
+        # actually charged for — it must exist regardless of whether the
+        # downstream distributor dropship call below succeeds. Previously
+        # this was only written in the success path, so a distributor
+        # failure (e.g. no real reseller credentials configured yet) left
+        # the order with zero recorded items despite a real charge.
         for li in items:
             component = component_by_mpn.get(li.mpn)
             if component is None:
                 logger.warning("MPN %s not found in components table — skipping order_item record", li.mpn)
                 continue
-            # NOTE: unit_cost/unit_price here should be pulled from the
-            # priced cart snapshot taken at checkout time (stored alongside
-            # the PaymentIntent), not re-queried live — prices must not
-            # drift between checkout and fulfillment. Wire that snapshot in
-            # via cart_raw["priced_line_items"] in your checkout route.
+            # unit_cost/unit_price come from the priced cart snapshot taken
+            # at checkout time (see checkout.py's checkout_sessions row),
+            # not re-queried live — prices must not drift between checkout
+            # and fulfillment.
             priced = next((p for p in cart_raw.get("priced_line_items", []) if p["mpn"] == li.mpn), None)
             await insert_order_item(
                 order_id=order_id,
@@ -198,6 +194,16 @@ async def _fulfill_order_from_payment_intent(intent: dict) -> None:
                 unit_cost_cents=priced.get("unit_cost_cents", 0) if priced else 0,
                 unit_price_cents=priced.get("unit_price_cents", 0) if priced else 0,
             )
+
+        try:
+            result = await client.submit_dropship_order(dropship_request)
+        except DistributorAPIError as exc:
+            logger.error("Distributor order submission failed for order %s via %s: %s", order_id, dist_code, exc)
+            await insert_distributor_order(order_id, distributor_db_id, None, "failed")
+            overall_status = "failed"
+            continue
+
+        await insert_distributor_order(order_id, distributor_db_id, result.distributor_order_number, result.status)
 
         if result.rejected_line_items:
             logger.warning(

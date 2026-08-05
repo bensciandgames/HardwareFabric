@@ -34,6 +34,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Providers>
           <TopNav />
           <main className="mx-auto max-w-[1600px] px-6 pb-16 pt-6">{children}</main>
+          <footer className="mx-auto max-w-[1600px] px-6 pb-10 pt-4">
+            <a
+              href="/roadmap"
+              className="font-mono text-[11px] uppercase tracking-wide text-text-faint transition-colors hover:text-text-muted"
+            >
+              Roadmap
+            </a>
+          </footer>
         </Providers>
       </body>
     </html>
