@@ -13,6 +13,7 @@ from app.models import (
     DistributorAvailability,
     DropshipOrderRequest,
     DistributorOrderResult,
+    DistributorOrderStatus,
     DistributorCode,
 )
 
@@ -45,5 +46,7 @@ class DistributorClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_order_status(self, distributor_order_number: str) -> str:
+    async def get_order_status(self, distributor_order_number: str) -> DistributorOrderStatus:
+        """Polls the distributor for current status + tracking number (once
+        shipped). Used by the tracking sync worker, not the checkout path."""
         raise NotImplementedError

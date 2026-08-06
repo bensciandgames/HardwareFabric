@@ -20,6 +20,7 @@ from app.models import (
     DistributorAvailability,
     DropshipOrderRequest,
     DistributorOrderResult,
+    DistributorOrderStatus,
     DistributorCode,
 )
 from app.distributors.base import DistributorClient, DistributorAPIError
@@ -128,9 +129,13 @@ class ArrowClient(DistributorClient):
             status="submitted" if accepted else "rejected",
         )
 
-    async def get_order_status(self, distributor_order_number: str) -> str:
+    async def get_order_status(self, distributor_order_number: str) -> DistributorOrderStatus:
         url = f"{self._base_url}/orders/{distributor_order_number}"
         resp = await self._request_with_retry("GET", url, headers=self._headers())
         if resp.status_code != 200:
             raise DistributorAPIError(self.code, "Order status lookup failed", resp.status_code)
-        return resp.json().get("status", "unknown")
+        data = resp.json()
+        # Field names to confirm against Arrow's real API docs once actual
+        # reseller access exists — same caveat as the Ingram client.
+        tracking_number = data.get("trackingNumber") or data.get("shipment", {}).get("trackingNumber")
+        return DistributorOrderStatus(status=data.get("status", "unknown"), tracking_number=tracking_number)

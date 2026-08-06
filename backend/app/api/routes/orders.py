@@ -14,6 +14,12 @@ Design notes:
   - One HardwareFabric order can fan out into multiple distributor orders
     (e.g. CPU/board from Ingram, GPU from Arrow) — each is submitted with
     blind_dropship=True and its own shipping metadata.
+  - Fallback sourcing: if a line item's preferred distributor rejects it
+    (or the submission call fails outright), it gets one shot at every
+    other configured distributor before being treated as permanently
+    unsourced. order_items is repointed to whichever distributor actually
+    ends up fulfilling a part — the customer's charged price never
+    changes, only our bookkeeping of who sourced it and at what cost.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from app.models import (
     DistributorCode,
 )
 from app.distributors.base import DistributorAPIError
-from app.distributors.registry import get_distributor_client
+from app.distributors.registry import get_all_distributor_clients
 from app.db import (
     clear_cart,
     order_exists_for_payment_intent,
@@ -41,6 +47,7 @@ from app.db import (
     insert_order_item,
     insert_distributor_order,
     update_order_status,
+    update_order_item_sourcing,
     fetch_components_by_mpns,
     fetch_distributor_id_by_code,
     fetch_order,
@@ -147,6 +154,7 @@ async def _fulfill_order_from_payment_intent(intent: dict) -> None:
     mpns = [li.mpn for li in line_items]
     components = await fetch_components_by_mpns(mpns)
     component_by_mpn = {c["mpn"]: c for c in components}
+    priced_by_mpn = {p["mpn"]: p for p in cart_raw.get("priced_line_items", [])}
 
     # Group line items by preferred distributor (fallback: Ingram first,
     # Arrow as failover) so each distributor gets exactly one PO for this order.
@@ -155,25 +163,28 @@ async def _fulfill_order_from_payment_intent(intent: dict) -> None:
         dist = li.preferred_distributor or DistributorCode.INGRAM_MICRO
         groups.setdefault(dist, []).append(li)
 
-    overall_status = "sourcing"
+    all_clients = get_all_distributor_clients()
+    all_distributor_codes = list(all_clients.keys())
+    distributor_db_id_by_code: dict[DistributorCode, str] = {}
 
-    for dist_code, items in groups.items():
-        client = get_distributor_client(dist_code)
-        dropship_request = DropshipOrderRequest(
-            order_id=order_id,
-            line_items=items,
-            shipping_address=shipping_address,
-            blind_dropship=True,
-        )
+    async def distributor_db_id(code: DistributorCode) -> str:
+        if code not in distributor_db_id_by_code:
+            distributor_db_id_by_code[code] = await fetch_distributor_id_by_code(code.value)
+        return distributor_db_id_by_code[code]
 
-        distributor_db_id = await fetch_distributor_id_by_code(dist_code.value)
+    resolved_mpns: set[str] = set()    # sourced by *some* distributor, preferred or fallback
+    unresolved_mpns: set[str] = set()  # rejected by every distributor we tried
 
+    for preferred_code, items in groups.items():
         # order_items is the bookkeeping record of what the customer was
         # actually charged for — it must exist regardless of whether the
         # downstream distributor dropship call below succeeds. Previously
         # this was only written in the success path, so a distributor
         # failure (e.g. no real reseller credentials configured yet) left
-        # the order with zero recorded items despite a real charge.
+        # the order with zero recorded items despite a real charge. It's
+        # written once here against the *preferred* distributor; if
+        # fallback sourcing below picks up a different distributor, the
+        # row is repointed via update_order_item_sourcing.
         for li in items:
             component = component_by_mpn.get(li.mpn)
             if component is None:
@@ -183,11 +194,11 @@ async def _fulfill_order_from_payment_intent(intent: dict) -> None:
             # at checkout time (see checkout.py's checkout_sessions row),
             # not re-queried live — prices must not drift between checkout
             # and fulfillment.
-            priced = next((p for p in cart_raw.get("priced_line_items", []) if p["mpn"] == li.mpn), None)
+            priced = priced_by_mpn.get(li.mpn)
             await insert_order_item(
                 order_id=order_id,
                 component_id=component["id"],
-                distributor_id=distributor_db_id,
+                distributor_id=await distributor_db_id(preferred_code),
                 mpn=li.mpn,
                 distributor_sku=priced.get("distributor_sku", "") if priced else "",
                 quantity=li.quantity,
@@ -195,26 +206,85 @@ async def _fulfill_order_from_payment_intent(intent: dict) -> None:
                 unit_price_cents=priced.get("unit_price_cents", 0) if priced else 0,
             )
 
-        try:
-            result = await client.submit_dropship_order(dropship_request)
-        except DistributorAPIError as exc:
-            logger.error("Distributor order submission failed for order %s via %s: %s", order_id, dist_code, exc)
-            await insert_distributor_order(order_id, distributor_db_id, None, "failed")
-            overall_status = "failed"
-            continue
+        # Try the preferred distributor first, then whatever else is
+        # configured, for anything still unresolved — a distributor
+        # rejecting a line item (or the whole submission erroring out)
+        # used to just fail that item permanently; now it gets one shot
+        # at every other configured distributor before we give up on it.
+        remaining = list(items)
+        tried_codes: list[DistributorCode] = []
+        candidates = [preferred_code] + [c for c in all_distributor_codes if c != preferred_code]
 
-        await insert_distributor_order(order_id, distributor_db_id, result.distributor_order_number, result.status)
-
-        if result.rejected_line_items:
-            logger.warning(
-                "Order %s: distributor %s rejected line items %s — needs fallback sourcing",
-                order_id, dist_code, result.rejected_line_items,
+        for dist_code in candidates:
+            if not remaining:
+                break
+            tried_codes.append(dist_code)
+            client = all_clients[dist_code]
+            dist_db_id = await distributor_db_id(dist_code)
+            dropship_request = DropshipOrderRequest(
+                order_id=order_id,
+                line_items=remaining,
+                shipping_address=shipping_address,
+                blind_dropship=True,
             )
-            overall_status = "partially_shipped"
 
-    final_status = "dropship_submitted" if overall_status != "failed" else "failed"
-    await update_order_status(order_id, final_status)
-    logger.info("Order %s fulfillment complete with status=%s", order_id, final_status)
+            try:
+                result = await client.submit_dropship_order(dropship_request)
+            except DistributorAPIError as exc:
+                logger.error(
+                    "Distributor order submission failed for order %s via %s: %s",
+                    order_id, dist_code, exc,
+                )
+                await insert_distributor_order(order_id, dist_db_id, None, "failed")
+                continue  # whole batch stays in `remaining`, next candidate (if any) gets a shot
+
+            await insert_distributor_order(order_id, dist_db_id, result.distributor_order_number, result.status)
+
+            accepted_mpns = set(result.accepted_line_items)
+            if accepted_mpns and dist_code != preferred_code:
+                # Fallback picked up what the preferred distributor
+                # couldn't — repoint the order_items bookkeeping so it
+                # reflects who's actually fulfilling each part. Refresh
+                # cost from the fallback distributor too (best-effort);
+                # the customer's charged price never changes regardless.
+                try:
+                    fresh = await client.get_price_and_availability(list(accepted_mpns))
+                    cost_by_mpn = {a.mpn: a for a in fresh}
+                except DistributorAPIError:
+                    cost_by_mpn = {}
+                for mpn in accepted_mpns:
+                    avail = cost_by_mpn.get(mpn)
+                    await update_order_item_sourcing(
+                        order_id=order_id,
+                        mpn=mpn,
+                        distributor_id=dist_db_id,
+                        distributor_sku=avail.distributor_sku if avail else "",
+                        unit_cost_cents=avail.cost_cents if avail else 0,
+                    )
+                logger.info(
+                    "Order %s: fallback distributor %s picked up %s after %s rejected/failed",
+                    order_id, dist_code, sorted(accepted_mpns), preferred_code,
+                )
+
+            resolved_mpns |= accepted_mpns
+            remaining = [li for li in remaining if li.mpn not in accepted_mpns]
+
+        if remaining:
+            logger.warning(
+                "Order %s: %s permanently unsourced after trying %s",
+                order_id, [li.mpn for li in remaining], [c.value for c in tried_codes],
+            )
+            unresolved_mpns |= {li.mpn for li in remaining}
+
+    if unresolved_mpns and resolved_mpns:
+        overall_status = "partially_shipped"
+    elif unresolved_mpns:
+        overall_status = "failed"
+    else:
+        overall_status = "dropship_submitted"
+
+    await update_order_status(order_id, overall_status)
+    logger.info("Order %s fulfillment complete with status=%s", order_id, overall_status)
 
     # The cart the customer paid for should no longer show up as "in cart" —
     # clear it now that an order has been recorded for this payment.

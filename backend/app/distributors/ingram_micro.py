@@ -30,6 +30,7 @@ from app.models import (
     DistributorAvailability,
     DropshipOrderRequest,
     DistributorOrderResult,
+    DistributorOrderStatus,
     DistributorCode,
 )
 from app.distributors.base import DistributorClient, DistributorAPIError
@@ -209,7 +210,7 @@ class IngramMicroClient(DistributorClient):
             status="submitted" if accepted else "rejected",
         )
 
-    async def get_order_status(self, distributor_order_number: str) -> str:
+    async def get_order_status(self, distributor_order_number: str) -> DistributorOrderStatus:
         token = await self._get_access_token()
         url = f"{self._base_url}/orders/{distributor_order_number}"
         resp = await self._request_with_retry(
@@ -217,4 +218,13 @@ class IngramMicroClient(DistributorClient):
         )
         if resp.status_code != 200:
             raise DistributorAPIError(self.code, "Order status lookup failed", resp.status_code)
-        return resp.json().get("orderStatus", "unknown")
+        data = resp.json()
+        # Field names to confirm against Ingram's real reseller docs once
+        # sandbox/production access is actually granted (blocked on the
+        # business entity + reseller account — see the private roadmap).
+        # trackingNumber is the documented top-level field on some Ingram
+        # order-status responses; shipmentDetails is the nested fallback
+        # others use — checking both so this doesn't silently no-op if
+        # Ingram's real shape differs from what's assumed here.
+        tracking_number = data.get("trackingNumber") or data.get("shipmentDetails", {}).get("trackingNumber")
+        return DistributorOrderStatus(status=data.get("orderStatus", "unknown"), tracking_number=tracking_number)

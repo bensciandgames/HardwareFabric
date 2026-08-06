@@ -93,3 +93,12 @@ class DistributorOrderResult(BaseModel):
     accepted_line_items: list[str]  # mpns
     rejected_line_items: list[str]
     status: str
+
+
+class DistributorOrderStatus(BaseModel):
+    """Result of polling a distributor for the current state of a
+    previously-submitted order — used by the order tracking sync worker
+    (app/worker/sync_order_status.py) to populate distributor_orders'
+    status/tracking_number once a distributor actually ships."""
+    status: str
+    tracking_number: Optional[str] = None

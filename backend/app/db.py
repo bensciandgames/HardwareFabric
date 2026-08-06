@@ -221,6 +221,72 @@ async def fetch_distributor_orders(order_id: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def update_order_item_sourcing(
+    order_id: str, mpn: str, distributor_id: str, distributor_sku: str, unit_cost_cents: int
+) -> None:
+    """Repoints an order_item's fulfilling distributor after fallback
+    sourcing (see orders.py) succeeds on a different distributor than the
+    one originally billed against at checkout time. The customer's
+    unit_price_cents never changes here — only which distributor/cost
+    actually ends up fulfilling the part."""
+    query = """
+        UPDATE order_items
+        SET distributor_id = $1, distributor_sku = $2, unit_cost_cents = $3
+        WHERE order_id = $4 AND mpn = $5
+    """
+    async with get_pool().acquire() as conn:
+        await conn.execute(query, distributor_id, distributor_sku, unit_cost_cents, order_id, mpn)
+
+
+async def fetch_open_distributor_orders() -> list[dict]:
+    """Distributor sub-orders with no tracking number yet and not in a
+    terminal failed/cancelled state — what the order tracking sync worker
+    (app/worker/sync_order_status.py) polls."""
+    query = """
+        SELECT do_.id, do_.order_id, do_.distributor_order_number, do_.status,
+               d.code AS distributor_code
+        FROM distributor_orders do_
+        JOIN distributors d ON d.id = do_.distributor_id
+        WHERE do_.tracking_number IS NULL
+          AND do_.status NOT IN ('failed', 'cancelled')
+          AND do_.distributor_order_number IS NOT NULL
+    """
+    async with get_pool().acquire() as conn:
+        rows = await conn.fetch(query)
+        return [dict(r) for r in rows]
+
+
+async def update_distributor_order_tracking(
+    distributor_order_id: str, status: str, tracking_number: str | None
+) -> None:
+    query = """
+        UPDATE distributor_orders
+        SET status = $1, tracking_number = COALESCE($2, tracking_number)
+        WHERE id = $3
+    """
+    async with get_pool().acquire() as conn:
+        await conn.execute(query, status, tracking_number, distributor_order_id)
+
+
+async def maybe_mark_order_shipped(order_id: str) -> None:
+    """If every distributor sub-order on this order now has a tracking
+    number (or is already in a terminal shipped/delivered state), bump the
+    parent order to 'shipped' so Completed Builds reflects reality instead
+    of sitting at 'dropship_submitted' forever."""
+    query = """
+        SELECT
+            count(*) FILTER (WHERE tracking_number IS NULL AND status NOT IN ('shipped', 'delivered')) AS still_open,
+            count(*) AS total
+        FROM distributor_orders WHERE order_id = $1
+    """
+    async with get_pool().acquire() as conn:
+        row = await conn.fetchrow(query, order_id)
+        if row and row["total"] > 0 and row["still_open"] == 0:
+            await conn.execute(
+                "UPDATE orders SET status = 'shipped' WHERE id = $1 AND status != 'shipped'", order_id
+            )
+
+
 # --- Users --------------------------------------------------------------
 
 async def create_user(
